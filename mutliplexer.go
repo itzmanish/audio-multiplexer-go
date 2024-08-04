@@ -10,6 +10,7 @@ import (
 )
 
 type OpusMultiplexer struct {
+	sync.RWMutex
 	encoder          *opus.Encoder
 	sampleRate       int
 	channel          int
@@ -77,6 +78,8 @@ func (mr *OpusMultiplexer) Stop() {
 
 // size should be calculated as clock_rate*sample_duration_in_ms/1000
 func (mr *OpusMultiplexer) AddStream(id string, clockRate, sampleDurationMs, channel int) error {
+	mr.Lock()
+	defer mr.Unlock()
 	if _, ok := mr.inputs[id]; ok {
 		return errors.New("stream already exists")
 	}
@@ -91,7 +94,9 @@ func (mr *OpusMultiplexer) AddStream(id string, clockRate, sampleDurationMs, cha
 
 // data is opus data
 func (mr *OpusMultiplexer) Process(data []byte, id string) error {
+	mr.RLock()
 	stream, ok := mr.inputs[id]
+	mr.RUnlock()
 	if !ok {
 		return errors.New("stream is not initialized")
 	}
@@ -119,14 +124,15 @@ func (mr *OpusMultiplexer) Process(data []byte, id string) error {
 func (mr *OpusMultiplexer) interleavedMultiplex() []int16 {
 	buffs := [][]int16{}
 	maxBufSize := 0
+	mr.RLock()
 	for _, s := range mr.inputs {
 		buf := s.buffer.Flush()
 		if len(buf) > maxBufSize {
 			maxBufSize = len(buf)
 		}
-		log.Println("size of buf after flush: ", len(buf), cap(buf))
 		buffs = append(buffs, buf)
 	}
+	mr.RUnlock()
 	size := len(buffs)
 	out := make([]int16, maxBufSize)
 	for i := maxBufSize - 1; i >= 0; i-- {
