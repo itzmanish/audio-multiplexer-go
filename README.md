@@ -1,53 +1,27 @@
-# Audio Multiplexer
+# Audio Multiplexer And Transcoder
 
-The `multiplexer` package provides functionality to manage multiple Opus audio streams, decode Opus data to PCM, interleave and multiplex PCM data, and re-encode the multiplexed PCM data back to Opus format. This is useful for real-time audio mixing, VoIP applications, and multi-participant audio conferencing systems.
+The `multiplexer` package provides functionality to manage multiple Opus and G711 audio streams, decode Opus/G711 data to PCM, interleave and multiplex PCM data, and re-encode the multiplexed PCM data back to Opus format. This is useful for real-time audio mixing, VoIP applications, and multi-participant audio conferencing systems.
 
 ## Features
 
-- **Manage Multiple Audio Streams**: Add and handle multiple Opus audio streams, each with its own decoder and buffer.
-- **Decode Opus Data**: Convert Opus-encoded data to PCM (Pulse Code Modulation) format.
+- **Manage Multiple Audio Streams**: Add and handle multiple Opus and G711 audio streams, each with its own decoder and buffer.
+- **Decode Opus/G711 Data**: Convert Opus-encoded data to PCM (Pulse Code Modulation) format.
 - **Multiplex Audio Streams**: Interleave and combine PCM data from multiple streams into a single output.
-- **Encode PCM to Opus**: Convert the combined PCM data back into Opus-encoded format for efficient transmission or storage.
+- **Encode PCM to Opus/G711**: Convert the combined PCM data back into Opus/G711-encoded format for efficient transmission or storage.
 
 # Usage
 
-## Creating an OpusMultiplexer
+## Creating an Multiplexer
 
 ```go
-sampleDuration := 20  // Sample duration in milliseconds
-sampleRate := 48000   // Sample rate in Hz
-channels := 2         // Number of audio channels
 
-multiplexer, err := NewOpusMultiplexer(sampleDuration, sampleRate, channels)
+multiplexer, err := NewMultiplexer()
 if err != nil {
     log.Fatalf("Failed to create multiplexer: %v", err)
 }
 ```
 
-## Adding a Stream
-
-```go
-streamID := "stream1"
-clockRate := 48000  // Clock rate in Hz
-
-err = multiplexer.AddStream(streamID, clockRate, sampleDuration, channels)
-if err != nil {
-    log.Fatalf("Failed to add stream: %v", err)
-}
-```
-
-## Processing Opus Data
-
-```go
-opusData := ... // Your Opus-encoded data
-
-err = multiplexer.Process(opusData, streamID)
-if err != nil {
-    log.Fatalf("Failed to process Opus data: %v", err)
-}
-```
-
-## Reading PCM Data
+## Reading PCM data
 
 ```go
 pcmData := multiplexer.ReadPCM16()
@@ -59,11 +33,12 @@ if len(pcmData) == 0 {
 ## Reading Opus Data
 
 ```go
-encodedData, err := multiplexer.ReadOpusBytes()
+buf:=make([]byte, 2048)
+n, err := multiplexer.Read(buf)
 if err != nil {
     log.Fatalf("Failed to read Opus bytes: %v", err)
 }
-if len(encodedData) == 0 {
+if n == 0 {
     log.Println("No Opus data available")
 }
 ```
