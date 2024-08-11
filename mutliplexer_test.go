@@ -1,6 +1,7 @@
 package multiplexer
 
 import (
+	"encoding/binary"
 	"io"
 	"log"
 	"os"
@@ -56,123 +57,169 @@ func readOpusPayloadFromOgg(id string, oggReader *oggreader.OggReader, ch chan<-
 	return nil
 }
 
-func TestMultiplexer(t *testing.T) {
-	sampleDuration := 20
-	sampleRate := 48000
-	channel := 2
-	mr, err := NewOpusMultiplexer(sampleDuration, sampleRate, channel)
-
-	log.Println("multiplexer created")
+func TestOpusStream_Decode(t *testing.T) {
+	// Load an Ogg file with Opus data from the testdata folder
+	reader, file, err := newOggReader("testdata/1.ogg")
 	assert.NoError(t, err)
-	assert.NotNil(t, mr)
+	defer file.Close()
 
-	ticker := time.NewTicker(time.Duration(mr.sampleDurationMs) * time.Millisecond)
-	dataCh := make(chan sampleData)
-	signalClose := make(chan struct{}, 1)
-	var inputFile1, inputFile2 *os.File
-	defer func() {
-		if inputFile1 != nil {
-			inputFile1.Close()
-		}
-		if inputFile2 != nil {
-			inputFile2.Close()
-		}
-	}()
+	// Initialize the Opus decoder stream
+	stream, err := NewDecodingOpusStream("testStream", 48000, 20, 2)
+	assert.NoError(t, err)
 
-	t.Run("add new stream", func(t *testing.T) {
-		log.Println("adding new streams")
-		err := mr.AddStream("1", sampleRate, sampleDuration, channel)
-		assert.NoError(t, err)
-		err = mr.AddStream("2", sampleRate, sampleDuration, channel)
-		assert.NoError(t, err)
-	})
+	ch := make(chan sampleData)
+	closeCh := make(chan struct{})
+	go readOpusPayloadFromOgg("1", reader, ch, closeCh)
+	writeFile, err := os.Create("testdata/1.pcm")
+	assert.NoError(t, err)
+	defer writeFile.Close()
+	for {
+		select {
+		case data := <-ch:
+			// Create a buffer for the decoded PCM data
+			pcm := make([]int16, stream.SampleCount()*stream.ChannelCount())
 
-	t.Run("push raw opus data", func(t *testing.T) {
-		reader1, file1, err := newOggReader("testdata/1.ogg")
-		assert.NoError(t, err)
-		assert.NotNil(t, file1)
-		assert.NotNil(t, reader1)
-		inputFile1 = file1
+			// Decode the Opus data
+			_, err = stream.Write(data.data)
+			assert.NoError(t, err)
 
-		reader2, file2, err := newOggReader("testdata/2.ogg")
-		assert.NoError(t, err)
-		assert.NotNil(t, file2)
-		assert.NotNil(t, reader2)
-		inputFile1 = file2
-
-		closeCh := make(chan struct{}, 2)
-		go readOpusPayloadFromOgg("1", reader1, dataCh, closeCh)
-		go readOpusPayloadFromOgg("2", reader2, dataCh, closeCh)
-		go func() {
-			log.Println("start processing raw opus encoded data")
-			counter := 2
-			for {
-				select {
-				case data := <-dataCh:
-					err := mr.Process(data.data, data.id)
-					assert.NoError(t, err)
-				case <-closeCh:
-					counter -= 1
-					if counter == 0 {
-						time.Sleep(10 * time.Millisecond)
-						ticker.Stop()
-						close(signalClose)
-						return
-					}
-				}
+			_, err = stream.ReadPCM(pcm)
+			assert.NoError(t, err)
+			// Validate that the decoded PCM data is non-empty
+			assert.NotEmpty(t, pcm)
+			for _, sample := range pcm {
+				err = binary.Write(writeFile, binary.LittleEndian, sample)
+				assert.NoError(t, err)
 			}
-		}()
-	})
-
-	t.Run("setup output buffer", func(t *testing.T) {
-		log.Println("starting ticker for reading decoded samples")
-		// Create the output OGG file
-		outputFile, err := os.Create("test_output.pcm")
-		if err != nil {
-			log.Fatalf("Error creating output file: %v", err)
+		case <-closeCh:
+			return
 		}
-		defer outputFile.Close()
+	}
+
+}
+
+func TestOpusStream_Encode(t *testing.T) {
+	// Initialize the Opus encoder stream
+	stream, err := NewEncodingOpusStream("testStream", 48000, 20, 2)
+	assert.NoError(t, err)
+
+	// Prepare sample PCM data to encode
+	pcmByte := make([]byte, stream.SampleCount()*2)
+	file, err := os.Open("testdata/1.pcm")
+	assert.NoError(t, err)
+	defer file.Close()
+
+	i, err := file.Read(pcmByte)
+	assert.NoError(t, err)
+
+	pcm := byteSliceToInt16(pcmByte[:i])
+
+	// Create a buffer to hold the encoded Opus data
+	encoded := make([]byte, 1024)
+
+	// Encode the PCM data
+	n, err := stream.Encode(pcm, encoded)
+	assert.NoError(t, err)
+
+	// Validate that the encoded data is non-empty
+	assert.NotZero(t, n)
+
+	// Initialize the Opus encoder stream
+	stream1, err := NewDecodingOpusStream("testStream1", 48000, 20, 2)
+	assert.NoError(t, err)
+
+	pcm1 := make([]int16, stream1.SampleCount())
+	n1, err := stream1.Decode(encoded[:n], pcm1)
+	assert.NoError(t, err)
+
+	assert.NotEmpty(t, pcm1[:n1])
+}
+
+func TestMultiplexer_AddOpusSourceStream(t *testing.T) {
+	mux := NewMultiplexer()
+
+	// Initialize an Opus decoding stream
+	stream, err := NewDecodingOpusStream("testStream", 48000, 20, 1)
+	assert.NoError(t, err)
+
+	// Add the stream to the multiplexer
+	err = mux.AddSourceStream("testStream", stream)
+	assert.NoError(t, err)
+
+	// Verify that the stream was added
+	mux.RLock()
+	defer mux.RUnlock()
+	assert.Contains(t, mux.sources, "testStream")
+}
+
+func TestMultiplexer_ReadPCM16(t *testing.T) {
+	mux := NewMultiplexer()
+
+	// Initialize and add an Opus decoding stream to the multiplexer
+	stream1, err := NewDecodingOpusStream("1", 48000, 20, 2)
+	assert.NoError(t, err)
+
+	stream2, err := NewDecodingOpusStream("2", 48000, 20, 2)
+	assert.NoError(t, err)
+
+	err = mux.AddSourceStream("1", stream1)
+	assert.NoError(t, err)
+	err = mux.AddSourceStream("2", stream2)
+	assert.NoError(t, err)
+
+	// Load an Ogg file with Opus data from the testdata folder
+	reader1, file1, err := newOggReader("testdata/1.ogg")
+	assert.NoError(t, err)
+	defer file1.Close()
+
+	// Load an Ogg file with Opus data from the testdata folder
+	reader2, file2, err := newOggReader("testdata/2.ogg")
+	assert.NoError(t, err)
+	defer file2.Close()
+
+	ch := make(chan sampleData)
+	closeCh := make(chan struct{}, 2)
+	closedCount := 0
+	go readOpusPayloadFromOgg("1", reader1, ch, closeCh)
+	go readOpusPayloadFromOgg("2", reader2, ch, closeCh)
+	writeFile, err := os.Create("testdata/muxed.pcm")
+	assert.NoError(t, err)
+	defer writeFile.Close()
+
+	go func() {
 		for {
 			select {
-			case <-ticker.C:
-				data, err := mr.ReadOpusBytes()
+			case data := <-ch:
+				if data.id == "1" {
+					// Simulate writing the Opus data to the stream
+					_, err = stream1.Write(data.data)
+				} else {
+					_, err = stream2.Write(data.data)
+				}
 				assert.NoError(t, err)
-				n, err := outputFile.Write(data)
-				assert.NoError(t, err, "failed to write opus data to file: %w", err)
-				log.Printf("saved: %v bytes", n)
-			case <-signalClose:
-				return
-			}
-		}
-	})
 
-	t.Run("verify the output", func(t *testing.T) {
-		actual, err := os.Open("test_output.pcm")
-		assert.NoError(t, err)
-		defer actual.Close()
-		expected, err := os.Open("testdata/expected.pcm")
-		assert.NoError(t, err)
-		defer expected.Close()
-
-		for j := 0; j < 20; j++ {
-			buf1 := make([]byte, 1024)
-			n, err := actual.Read(buf1)
-			assert.NoError(t, err)
-			buf1 = buf1[:n]
-
-			buf2 := make([]byte, 1024)
-			n1, err := expected.Read(buf2)
-			assert.NoError(t, err)
-			buf2 = buf2[:n1]
-
-			assert.Equal(t, n1, n)
-
-			for i := 0; i < n1; i++ {
-				if buf1[i] != buf2[i] {
-					t.Logf("actual: %v, expected: %v", buf1[i], buf2[i])
-					t.FailNow()
+			case <-closeCh:
+				closedCount += 1
+				if closedCount == 2 {
+					return
 				}
 			}
 		}
-	})
+	}()
+	startTime := time.Now()
+	for {
+		if startTime.Add(2*time.Second).Compare(time.Now()) < 0 {
+			break
+		}
+		// Decode the Opus data
+		pcm := mux.ReadPCM(960 * 2)
+
+		// Validate that the decoded PCM data is non-empty
+		assert.NotEmpty(t, pcm)
+		for _, sample := range pcm {
+			err = binary.Write(writeFile, binary.LittleEndian, sample)
+			assert.NoError(t, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

@@ -3,55 +3,84 @@ package multiplexer
 import (
 	"errors"
 	"log"
-	"math"
 	"sync"
 
 	"gopkg.in/hraban/opus.v2"
 )
 
-type OpusMultiplexer struct {
-	sync.RWMutex
-	encoder          *opus.Encoder
-	sampleRate       int
-	channel          int
-	sampleDurationMs int
-
-	closeCh chan struct{}
-	inputs  map[string]*Stream
-}
-
-type Stream struct {
-	id             string
-	sampleRate     int
-	channel        int
-	sampleDuration int
-	size           int
-
-	decoder *opus.Decoder
-	buffer  FlushableBuffer
-}
-
 var int16BufferPool sync.Pool
 
-func NewStream(id string, sampleRate, sampleDuration, channel int) (*Stream, error) {
-	sampleSize := channel * sampleDuration * sampleRate / 1000
+type Multiplexer struct {
+	sync.RWMutex
+	encoder Encoder
+
+	sources map[string]Stream
+}
+
+type Stream interface {
+	ReadPCM([]int16) (int, error)
+	WritePCM([]int16) (int, error)
+}
+
+type DecodingStream interface {
+	Decode([]byte, []int16) (int, error)
+}
+
+type EncodingStream interface {
+	Encode([]int16, []byte) (int, error)
+}
+
+type Encoder interface {
+	Encode([]int16, []byte) (int, error)
+	SampleSize() int
+	ChannelCount() int
+}
+
+type Decoder interface {
+	Decode([]byte, []int16) (int, error)
+}
+
+type OpusDecoder struct {
+	od     *opus.Decoder
+	buffer *RingBuffer[int16]
+}
+
+func (od *OpusDecoder) Decode(in []byte, out []int16) (int, error) {
+	return od.od.Decode(in, out)
+}
+
+func NewOpusDecoder(sampleRate, channel, size int) (Decoder, error) {
 	decoder, err := opus.NewDecoder(sampleRate, channel)
 	if err != nil {
 		return nil, err
 	}
-	return &Stream{
-		id:             id,
-		sampleRate:     sampleRate,
-		sampleDuration: sampleDuration,
-		channel:        channel,
-		size:           sampleSize,
-
-		decoder: decoder,
-		buffer:  NewFlushableBuffer(sampleSize),
-	}, err
+	return &OpusDecoder{
+		od:     decoder,
+		buffer: NewRingBuffer[int16](size * channel),
+	}, nil
 }
 
-func NewOpusMultiplexer(sampleDuration, sampleRate int, channel int) (*OpusMultiplexer, error) {
+type OpusEncoder struct {
+	size    int
+	channel int
+
+	oe     *opus.Encoder
+	buffer *RingBuffer[byte]
+}
+
+func (oe *OpusEncoder) SampleSize() int {
+	return oe.size
+}
+
+func (oe *OpusEncoder) ChannelCount() int {
+	return oe.channel
+}
+
+func (oe *OpusEncoder) Encode(in []int16, out []byte) (int, error) {
+	return oe.oe.Encode(in, out)
+}
+
+func NewOpusEncoder(sampleRate, channel, size int) (Encoder, error) {
 	enc, err := opus.NewEncoder(sampleRate, channel, opus.AppAudio)
 	if err != nil {
 		return nil, err
@@ -60,101 +89,78 @@ func NewOpusMultiplexer(sampleDuration, sampleRate int, channel int) (*OpusMulti
 	if err != nil {
 		return nil, err
 	}
-	// sampleSize := channel * sampleDuration * sampleRate / 1000
-	return &OpusMultiplexer{
-		sampleDurationMs: sampleDuration,
-		sampleRate:       sampleRate,
-		channel:          channel,
-		closeCh:          make(chan struct{}),
-		encoder:          enc,
-		inputs:           make(map[string]*Stream),
+	return &OpusEncoder{
+		size:    size,
+		channel: channel,
+		oe:      enc,
+		buffer:  NewRingBuffer[byte](size * channel * 2), // int16 data holds 2 byte, size is sample size
 	}, nil
 }
 
-func (mr *OpusMultiplexer) Stop() {
-	mr.closeCh <- struct{}{}
-	close(mr.closeCh)
+func NewMultiplexer() *Multiplexer {
+	return &Multiplexer{
+		sources: make(map[string]Stream),
+	}
+}
+
+func (mr *Multiplexer) AddEncoder(id string, enc Encoder) error {
+	if mr.encoder != nil {
+		return errors.New("encoder already configured")
+	}
+
+	mr.Lock()
+	mr.encoder = enc
+	mr.Unlock()
+	return nil
 }
 
 // size should be calculated as clock_rate*sample_duration_in_ms/1000
-func (mr *OpusMultiplexer) AddStream(id string, clockRate, sampleDurationMs, channel int) error {
+func (mr *Multiplexer) AddSourceStream(id string, stream Stream) error {
 	mr.Lock()
 	defer mr.Unlock()
-	if _, ok := mr.inputs[id]; ok {
+	if _, ok := mr.sources[id]; ok {
 		return errors.New("stream already exists")
 	}
-	stream, err := NewStream(id, clockRate, sampleDurationMs, channel)
-	if err != nil {
-		return err
-	}
 
-	mr.inputs[id] = stream
+	mr.sources[id] = stream
 	return nil
 }
 
-// data is opus data
-func (mr *OpusMultiplexer) Process(data []byte, id string) error {
-	mr.RLock()
-	stream, ok := mr.inputs[id]
-	mr.RUnlock()
-	if !ok {
-		return errors.New("stream is not initialized")
-	}
-	pcm := make([]int16, stream.size)
-	n, err := stream.decoder.Decode(data, pcm)
-	if err != nil {
-		return err
-	}
-	validData := pcm[:n*stream.channel]
-	isEmpty := true
-	i := 0
-	for _, b := range validData {
-		if b != 0 {
-			isEmpty = false
-			break
-		}
-		i += 1
-	}
-	if !isEmpty {
-		stream.buffer.Push(validData[i:])
-	}
-	return nil
-}
-
-func (mr *OpusMultiplexer) interleavedMultiplex() []int16 {
+func (mr *Multiplexer) interleavedMultiplex(sampleSize int) []int16 {
 	buffs := [][]int16{}
 	maxBufSize := 0
 	mr.RLock()
-	for _, s := range mr.inputs {
-		buf := s.buffer.Flush()
-		if len(buf) > maxBufSize {
-			maxBufSize = len(buf)
+	for _, s := range mr.sources {
+		bufI := int16BufferPool.Get()
+		var buf []int16
+		if bufI == nil {
+			buf = make([]int16, sampleSize)
+		} else {
+			buf = *bufI.(*[]int16)
+		}
+		n, err := s.ReadPCM(buf)
+		if err != nil {
+			continue
+		}
+		buf = buf[:n]
+		if n > maxBufSize {
+			maxBufSize = n
 		}
 		buffs = append(buffs, buf)
 	}
 	mr.RUnlock()
 	size := len(buffs)
 	out := make([]int16, maxBufSize)
-	for i := maxBufSize - 1; i >= 0; i-- {
+	// for i := maxBufSize - 1; i >= 0; i-- {
+	for i := 0; i < maxBufSize; i++ {
 		var sum int16
 		for _, buf := range buffs {
-			b := int16(0)
-			if len(buf) < maxBufSize {
-				diff := maxBufSize - len(buf)
-				pos := i - diff
-				if pos < 0 {
-					continue
-				}
-				b = buf[i-diff]
-			} else {
-				b = buf[i]
-			}
-			sum += b / int16(size)
+			sum += (buf[i] / int16(size))
 		}
 		out[i] = sum
 	}
 	for _, buf := range buffs {
-		if cap(buf) < math.MaxInt16 {
+		if cap(buf) < 8184 {
 			buf = buf[:0]
 			int16BufferPool.Put(&buf)
 		}
@@ -162,20 +168,24 @@ func (mr *OpusMultiplexer) interleavedMultiplex() []int16 {
 	return out
 }
 
-func (mr *OpusMultiplexer) ReadPCM16() []int16 {
-	return mr.interleavedMultiplex()
+func (mr *Multiplexer) WritePCM([]int16) (int, error) {
+	return 0, errors.New("multiplexer stream doesn't support write method")
 }
 
-func (mr *OpusMultiplexer) ReadOpusBytes() ([]byte, error) {
-	data := mr.ReadPCM16()
-	byteSlice := make([]byte, mr.sampleDurationMs*mr.sampleRate/1000)
+func (mr *Multiplexer) ReadPCM(sampleSize int) []int16 {
+	return mr.interleavedMultiplex(sampleSize)
+}
+
+func (mr *Multiplexer) Read(dst []byte) (int, error) {
+	data := mr.ReadPCM(mr.encoder.SampleSize() * mr.encoder.ChannelCount())
 	if len(data) == 0 {
-		return byteSlice, nil
+		return 0, nil
 	}
-	n, err := mr.encoder.Encode(data, byteSlice)
+
+	n, err := mr.encoder.Encode(data, dst)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	log.Printf("encoded data: size(pcm): %v, n: %v, slicecap: %v", len(data), n, len(byteSlice))
-	return byteSlice[:n], nil
+	log.Printf("encoded data: size(pcm): %v, n: %v, slicecap: %v", len(data), n, len(dst))
+	return n, nil
 }
