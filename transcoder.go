@@ -1,4 +1,4 @@
-package multiplexer
+package avmuxer
 
 import (
 	"errors"
@@ -16,7 +16,7 @@ func NewTranscoder() *Transcoder {
 	return &Transcoder{}
 }
 
-func (tc *Transcoder) AddSource(id string, stream Stream) error {
+func (tc *Transcoder) AddSource(stream Stream) error {
 	if tc.input != nil {
 		return errors.New("source is already present")
 	}
@@ -24,7 +24,7 @@ func (tc *Transcoder) AddSource(id string, stream Stream) error {
 	return nil
 }
 
-func (tc *Transcoder) AddEncoder(id string, enc Encoder) error {
+func (tc *Transcoder) AddEncoder(enc Encoder) error {
 	if tc.encoder != nil {
 		return errors.New("encoder is already present")
 	}

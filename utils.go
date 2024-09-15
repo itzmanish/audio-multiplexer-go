@@ -1,4 +1,4 @@
-package multiplexer
+package avmuxer
 
 // Helper function to convert int16 PCM data to byte slice
 func int16ToByteSlice(samples []int16) []byte {

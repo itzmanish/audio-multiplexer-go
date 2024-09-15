@@ -1,4 +1,4 @@
-package multiplexer
+package avmuxer
 
 import (
 	"encoding/binary"
@@ -222,4 +222,14 @@ func TestMultiplexer_ReadPCM16(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+func generateTestPCM(sampleCount, repeatCount int) []int16 {
+	pcm := make([]int16, sampleCount*repeatCount)
+	for i := 0; i < repeatCount; i++ {
+		for j := 0; j < sampleCount; j++ {
+			pcm[i*sampleCount+j] = int16((j % 100) * 100)
+		}
+	}
+	return pcm
 }

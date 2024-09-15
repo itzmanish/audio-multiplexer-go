@@ -1,4 +1,4 @@
-package multiplexer
+package avmuxer
 
 import (
 	"errors"

@@ -1,4 +1,4 @@
-module github.com/itzmanish/multiplexer
+module github.com/itzmanish/avmuxer
 
 go 1.22.1
 
@@ -32,6 +32,7 @@ require (
 	github.com/pion/transport/v3 v3.0.6 // indirect
 	github.com/pion/turn/v3 v3.0.3 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/wlynxg/anet v0.0.3 // indirect
 	golang.org/x/crypto v0.25.0 // indirect
 	golang.org/x/exp v0.0.0-20190731235908-ec7cb31e5a56 // indirect

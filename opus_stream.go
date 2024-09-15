@@ -1,4 +1,4 @@
-package multiplexer
+package avmuxer
 
 import (
 	"errors"
@@ -6,6 +6,7 @@ import (
 	"log"
 )
 
+// OpusStream interface defines the methods for both encoding and decoding Opus streams
 type OpusStream interface {
 	Stream
 
@@ -17,8 +18,10 @@ type OpusStream interface {
 	ChannelCount() int
 	SampleDurationMs() int
 	SampleCount() int
+	ID() string
 }
 
+// opusEncodingStream implements OpusStream for encoding
 type opusEncodingStream struct {
 	id               string
 	sampleRate       int
@@ -31,6 +34,7 @@ type opusEncodingStream struct {
 	encoder *OpusEncoder
 }
 
+// opusDecodingStream implements OpusStream for decoding
 type opusDecodingStream struct {
 	id               string
 	sampleRate       int
@@ -43,12 +47,18 @@ type opusDecodingStream struct {
 	decoder *OpusDecoder
 }
 
+// NewDecodingOpusStream creates a new OpusStream for decoding
 func NewDecodingOpusStream(id string, sampleRate, sampleDuration, channel int) (OpusStream, error) {
+	// Calculate sample size based on duration and rate
 	sampleSize := sampleDuration * sampleRate / 1000
+
+	// Create a new OpusDecoder
 	dec, err := NewOpusDecoder(sampleRate, channel, sampleSize)
 	if err != nil {
 		return nil, err
 	}
+
+	// Return a new opusDecodingStream
 	return &opusDecodingStream{
 		id:               id,
 		sampleRate:       sampleRate,
@@ -60,7 +70,10 @@ func NewDecodingOpusStream(id string, sampleRate, sampleDuration, channel int) (
 	}, err
 }
 
+// NewEncodingOpusStream creates a new OpusStream for encoding
 func NewEncodingOpusStream(id string, sampleRate, sampleDuration, channel int) (OpusStream, error) {
+	// Similar to NewDecodingOpusStream, but for encoding
+	// ... existing code ...
 	sampleSize := sampleDuration * sampleRate / 1000
 	enc, err := NewOpusEncoder(sampleRate, channel, sampleSize)
 	if err != nil {
@@ -89,30 +102,38 @@ func (ods *opusDecodingStream) SampleRate() int {
 func (ods *opusDecodingStream) SampleDurationMs() int {
 	return ods.sampleDurationMs
 }
+func (ods *opusDecodingStream) ID() string {
+	return ods.id
+}
 
 func (ods *opusDecodingStream) Decode(src []byte, dst []int16) (int, error) {
 	return ods.decoder.Decode(src, dst)
 }
 
-// It takes encoded opus data and decode then store in the buffer
+// Write decodes Opus data and writes PCM to the sink
 func (ods *opusDecodingStream) Write(data []byte) (int, error) {
+	// Decode Opus data to PCM
 	pcm := make([]int16, ods.size*ods.channel)
 	n, err := ods.Decode(data, pcm)
 	if err != nil {
 		return 0, err
 	}
+
 	log.Printf("samples decoded: %v, os.size: %v, data size: %v\n", n, ods.size, len(data))
+
+	// Write decoded PCM to sink if available
 	if ods.sink != nil {
 		_, err := ods.sink.Write(int16ToByteSlice(pcm[:n*ods.channel]))
 		if err != nil {
 			return 0, err
 		}
 	}
-	// FIXME(itzmanish): do we need to store the pcm data?
+
+	// Write PCM data to buffer
 	return ods.decoder.buffer.Write(pcm[:n*ods.channel])
 }
 
-// This reads the raw PCM data from Decoding OPUS stream
+// ReadPCM reads raw PCM data from the decoding buffer
 func (ods *opusDecodingStream) ReadPCM(dst []int16) (int, error) {
 	if ods.decoder == nil {
 		return 0, errors.New("stream is not decoding supported")
@@ -120,7 +141,7 @@ func (ods *opusDecodingStream) ReadPCM(dst []int16) (int, error) {
 	return ods.decoder.buffer.Read(dst)
 }
 
-// This reads the raw PCM data from Decoding OPUS stream and convert them to byte array
+// Read reads raw PCM data and converts it to a byte array
 func (ods *opusDecodingStream) Read(dst []byte) (int, error) {
 	if ods.decoder == nil {
 		return 0, errors.New("stream is not decoding supported")
@@ -167,6 +188,10 @@ func (oes *opusEncodingStream) SampleDurationMs() int {
 	return oes.sampleDurationMs
 }
 
+func (oes *opusEncodingStream) ID() string {
+	return oes.id
+}
+
 func (*opusEncodingStream) ReadPCM([]int16) (int, error) {
 	return 0, errors.New("encoding stream doesn't support reading pcm")
 }
@@ -191,25 +216,21 @@ func (oes *opusEncodingStream) WritePCM(data []int16) (int, error) {
 	return oes.encoder.buffer.Write(byteData[:n])
 }
 
-// This reads encoded data after pulling and encoding from the reader
+// Read reads encoded Opus data from the encoder's buffer
 func (oes *opusEncodingStream) Read(dst []byte) (int, error) {
-	// if oes.encoder == nil {
-	// 	return 0, errors.New("stream is not encoding supported")
-	// }
-	// if oes.reader == nil {
-	// 	return 0, errors.New("reader is not connected")
-	// }
-	// byteArr := make([]byte, oes.size*oes.channel*2)
-	// n, err := oes.reader.Read(byteArr)
-	// if err != nil {
-	// 	return n, err
-	// }
-	// pcm := byteSliceToInt16(byteArr[:n])
-	// _, err = oes.WritePCM(pcm)
-	// if err != nil {
-	// 	return 0, err
-	// }
-	return oes.encoder.buffer.Read(dst)
+	if oes.encoder == nil {
+		return 0, errors.New("encoder is not initialized")
+	}
+
+	n, err := oes.encoder.buffer.Read(dst)
+	if err != nil {
+		if err == ErrEmptyBuffer {
+			return 0, io.EOF
+		}
+		return n, err
+	}
+
+	return n, nil
 }
 
 func (oes *opusEncodingStream) Encode(src []int16, dst []byte) (int, error) {
