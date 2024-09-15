@@ -123,7 +123,7 @@ func (ods *opusDecodingStream) Write(data []byte) (int, error) {
 
 	// Write decoded PCM to sink if available
 	if ods.sink != nil {
-		_, err := ods.sink.Write(int16ToByteSlice(pcm[:n*ods.channel]))
+		_, err := ods.sink.Write(Int16ToByteSlice(pcm[:n*ods.channel]))
 		if err != nil {
 			return 0, err
 		}
@@ -151,7 +151,7 @@ func (ods *opusDecodingStream) Read(dst []byte) (int, error) {
 	if err != nil {
 		return n, err
 	}
-	bb := int16ToByteSlice(int16Buf[:n])
+	bb := Int16ToByteSlice(int16Buf[:n])
 	if len(dst) < len(bb) {
 		return 0, io.ErrShortBuffer
 	}
@@ -197,7 +197,7 @@ func (*opusEncodingStream) ReadPCM([]int16) (int, error) {
 }
 
 func (oes *opusEncodingStream) Write(data []byte) (int, error) {
-	pcm := byteSliceToInt16(data)
+	pcm := ByteSliceToInt16(data)
 	return oes.WritePCM(pcm)
 }
 

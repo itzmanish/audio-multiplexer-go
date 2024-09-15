@@ -60,7 +60,7 @@ func (gs *G711Stream) ReadPCM(dst []int16) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	pcm := byteSliceToInt16(bb[:n])
+	pcm := ByteSliceToInt16(bb[:n])
 	if len(dst) < len(pcm) {
 		return 0, io.ErrShortBuffer
 	}

@@ -112,7 +112,7 @@ func TestOpusStream_Encode(t *testing.T) {
 	i, err := file.Read(pcmByte)
 	assert.NoError(t, err)
 
-	pcm := byteSliceToInt16(pcmByte[:i])
+	pcm := ByteSliceToInt16(pcmByte[:i])
 
 	// Create a buffer to hold the encoded Opus data
 	encoded := make([]byte, 1024)
