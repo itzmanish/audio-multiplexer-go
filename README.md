@@ -1,6 +1,6 @@
 # Audio Multiplexer And Transcoder
 
-The `multiplexer` package provides functionality to manage multiple Opus and G711 audio streams, decode Opus/G711 data to PCM, interleave and multiplex PCM data, and re-encode the multiplexed PCM data back to Opus format. This is useful for real-time audio mixing, VoIP applications, and multi-participant audio conferencing systems.
+The `avmuxer` package provides functionality to manage multiple Opus and G711 audio streams, decode Opus/G711 data to PCM, interleave and multiplex PCM data, and re-encode the multiplexed PCM data back to Opus format. This is useful for real-time audio mixing, VoIP applications, and multi-participant audio conferencing systems.
 
 ## Features
 
